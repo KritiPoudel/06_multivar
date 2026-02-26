@@ -113,7 +113,9 @@ How are variables related? Any strong correlations that we should watch out for?
 Let's create a correlation matrix
 ```{r correlation matrix p-values}
 # Estimating significance matrix
-p.mat <- 
+p.mat <- weather %>% 
+  dplyr::select(-year, -site) %>% 
+  cor_pmat()
 
 p.mat
 ```
@@ -235,7 +237,7 @@ weather %>%
   ggplot(aes(x = mean_dayl.s_Apr, 
              y = sum_prcp.mm_Oct)) +
   geom_point() +
-  geom_smooth(method="lm") +
+  geom_smooth(method="lm") #+
   stat_correlation()
 ```
 
@@ -252,11 +254,17 @@ weather %>%
 Now let's fit some models with one or two uncorrelated and correlated variables explaining fiberstrength and see what happens.  
 
 ```{r strength ~ mean_dayl.s_Apr}
-lm_dayl.apr 
+lm_dayl.apr <- lm(strength_gtex ~ mean_dayl.s_Apr, 
+                  data = weather) %>% 
+  tidy() %>% 
+  filter(term != "(Intercept)") %>% 
+  mutate(mod = "lm_dayl.apr")
 
 lm_dayl.apr
 
 ```
+
+
 
 ```{r strength ~ sum_prcp.mm_Oct}
 lm_prp.oct <- lm(strength_gtex ~ sum_prcp.mm_Oct,
@@ -297,13 +305,18 @@ lm_dayl.apr %>%
   bind_rows(lm_prp.oct, 
             lm_dayl.prcp,
             lm_daylapr.daylmay) %>%
-  mutate(mod=factor(mod,
+  mutate(mod = factor(mod,
                     levels=c("lm_dayl.apr",
                              "lm_prp.oct",
                              "lm_2var.uncor",
                              "lm_2var.cor"))) %>%
   filter(term != "mean_dayl.s_May") %>%
-  ggplot(aes(x=mod))
+  ggplot(aes(x=mod))+
+  geom_pointrange(aes(y = estimate,
+                      ymin = estimate - std.error,
+                      ymax = estimate + std.error))+
+  facet_wrap(~term, scales = "free")+
+  scale_x_discrete(guide = guide_axis(n.dodge = 2))
 
 ```
 
@@ -321,6 +334,11 @@ General rule of thumb:
 Let's check the variance inflation factor (VIF) of both uncorrelated and correlated models
 ```{r vif uncorrelated}
 # Uncorrelated
+
+vif(lm(strength_gtex ~ mean_dayl.s_Apr + sum_prcp.mm_Oct,
+       data = weather))
+
+##nomulticollinearity
 ```
 
 
@@ -331,6 +349,7 @@ lm(strength_gtex ~ mean_dayl.s_Apr +
    data = weather) %>%
   vif()
 
+##very high multicollinearity 
 ```
 
 ## Dealing with multicollinearity  
@@ -356,7 +375,9 @@ Some analysis do the normalization for you (like PCA), and others don't (like k-
 
 Since both PCA and k-means only take numerical variables, let's select them now.  
 ```{r selecting only numerical vars}
-weather_n 
+weather_n <- weather %>% 
+  dplyr::select(-c(1:3))
+  
 
 weather_n
 ```
@@ -391,14 +412,21 @@ knitr::include_graphics("https://miro.medium.com/v2/resize:fit:1200/1*V4H3Cu8qGr
 Let's run PCA for our weather data.  
 
 ```{r pca model}
-mod_pca 
+mod_pca <- prcomp(weather_n, scale. = T)
+
+summary(mod_pca)
 
 ```
+
+Proportion of variance explains the individuals 
 
 ## Choosing number of PCs  
 Based on scree plot (total variance):  
 ```{r pca checking number of components}
 # Scree plot
+
+fviz_eig(mod_pca,
+         addlabels = T)
 
 ```
     
@@ -407,7 +435,14 @@ This indicates that original variables were correlated (as we expected).
 
 If wanted to use enough PCs to explain 70% of total variance, how many would we need?  
 ```{r PCs to explain 70pct variance}
-
+mod_pca %>% 
+  get_eig() %>% 
+  mutate(pc = 1:nrow(.)) %>%
+  ggplot(aes(x = pc,
+             y = cumulative.variance.percent)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = 70)
+  
 
 ```
     
@@ -436,7 +471,9 @@ mod_pca$rotation %>%
 Which variables contributed most to PC1, regardless of direction?  
 
 ```{r variables contributing to PC1}
-
+fviz_contrib(mod_pca,
+             choice = "var",
+             axes = 1)
 ```
   
 Let's check the eigenvectors for both PCs 1 and 2 variables:  
@@ -454,8 +491,12 @@ The longer is the eigenvector for a given variable, the more important it is tow
 
 Let's plot PC1 vs PC2 scores, look for any groupings.  
 
-```{r PC1 vs PC2}
+PC1 ~ sum_prcp_oct x coefficient +
+      mean_daylength_jan x coefficient
 
+```{r PC1 vs PC2}
+fviz_pca_ind(mod_pca,
+             label = F)
 ```
   
 Appears that some groups exist.  
@@ -472,18 +513,22 @@ Let's add the first 4 PCs to our original dataset and run a regression versus gr
 
 ```{r pca scores}
 # Extract first 4 PCs scores
-pca_scores 
+pca_scores <- mod_pca$x %>% 
+  as.data.frame() %>% 
+  dplyr::select(PC1:PC4)
 
 pca_scores
 ```
 
 ```{r pca regression}
 # Adding PCs 1-4 scores to original data set
-weather_postpca 
+weather_postpca <- weather %>% 
+  bind_cols(pca_scores)
 
 # Regression of yield ~ PCs
 
-lm_pca 
+lm_pca <- lm(strength_gtex ~ PC1 + PC2 + PC3 + PC4,
+             data = weather_postpca)
 
 # Summary  
 summary(lm_pca)
@@ -493,10 +538,18 @@ summary(lm_pca)
 ```{r pca regression}
 # Checking VIF
 
+vif(lm_pca)
+
 ```
+
 
 ```{r pca regression plots}
 # Plotting strength vs PC1
+ggplot(data = weather_postpca,
+       aes(x = PC1,
+           y = strength_gtex))+
+  geom_point()+
+  geom_smooth(method = "lm")
 
 ```
 
